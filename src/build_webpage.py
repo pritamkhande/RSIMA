@@ -5,30 +5,41 @@ import pandas as pd
 
 from rsi_of_ma_strategy import compute_indicators, generate_trades
 
+# ----------------------------------------------------------------------
+# Correct data path for your incremental downloader
+# ----------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[1]
-DATA_PATH = ROOT / "data" / "raw" / "nifty_2000.csv"
+DATA_PATH = ROOT / "data" / "raw" / "nifty_daily.csv"
 HTML_PATH = ROOT / "index.html"
 
 
+# ----------------------------------------------------------------------
+# Load Data
+# ----------------------------------------------------------------------
 def load_data() -> pd.DataFrame:
     if not DATA_PATH.exists():
         raise FileNotFoundError(
             f"{DATA_PATH} not found. Run `python src/download_nifty.py` first."
         )
-    df = pd.read_csv(DATA_PATH, parse_dates=["date"])
+
+    df = pd.read_csv(DATA_PATH, parse_dates=["Date"])
+    df = df.rename(columns={"Date": "date"})
     df = df.sort_values("date").reset_index(drop=True)
     return df
 
 
+# ----------------------------------------------------------------------
+# Extract latest prediction (robust long/short or no signal)
+# ----------------------------------------------------------------------
 def get_latest_prediction(df_ind: pd.DataFrame) -> dict:
     last = df_ind.iloc[-1]
 
     if last["robust_long"]:
         direction = "BUY (UP)"
-        comment = "Robust long signal detected on latest bar."
+        comment = "Robust long signal detected."
     elif last["robust_short"]:
         direction = "SELL (DOWN)"
-        comment = "Robust short signal detected on latest bar."
+        comment = "Robust short signal detected."
     else:
         direction = "NO SIGNAL"
         comment = "No robust long/short signal on latest bar."
@@ -43,6 +54,9 @@ def get_latest_prediction(df_ind: pd.DataFrame) -> dict:
     }
 
 
+# ----------------------------------------------------------------------
+# Find last closed trade from long/short combined list
+# ----------------------------------------------------------------------
 def get_last_trade(df_ind: pd.DataFrame) -> dict | None:
     long_trades = generate_trades(df_ind, direction="long")
     short_trades = generate_trades(df_ind, direction="short")
@@ -52,8 +66,8 @@ def get_last_trade(df_ind: pd.DataFrame) -> dict | None:
 
     all_trades = pd.concat([long_trades, short_trades], ignore_index=True)
     all_trades = all_trades.sort_values("entry_date").reset_index(drop=True)
-    last = all_trades.iloc[-1]
 
+    last = all_trades.iloc[-1]
     result = "WIN" if last["return_pct"] > 0 else "LOSS"
 
     return {
@@ -66,29 +80,40 @@ def get_last_trade(df_ind: pd.DataFrame) -> dict | None:
     }
 
 
+# ----------------------------------------------------------------------
+# Build HTML page
+# ----------------------------------------------------------------------
 def build_html(pred: dict, last_trade: dict | None) -> str:
+
+    # Build last trade table row
     if last_trade is not None:
-        last_trade_rows = f"""            <tr>
+        last_trade_rows = f"""
+        <tr>
             <td>{last_trade['entry_date']}</td>
             <td>{last_trade['direction']}</td>
             <td>{last_trade['entry_open']:.2f}</td>
             <td>{last_trade['exit_close']:.2f}</td>
             <td>{last_trade['return_pct']:.2f}%</td>
-            <td><span class='tag {{'tag-win' if last_trade['result']=='WIN' else 'tag-loss'}}'>{last_trade['result']}</span></td>
+            <td><span class="tag {'tag-win' if last_trade['result']=='WIN' else 'tag-loss'}">{last_trade['result']}</span></td>
         </tr>
         """
     else:
-        last_trade_rows = """            <tr>
+        last_trade_rows = """
+        <tr>
             <td colspan="6" style="text-align:center;">No trades generated yet.</td>
         </tr>
         """
 
+    # ----------------------------------------------------
+    # HTML content
+    # ----------------------------------------------------
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
     <title>NIFTY RSI-of-MA – Latest Prediction</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+
     <style>
         body {{
             font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -97,14 +122,18 @@ def build_html(pred: dict, last_trade: dict | None) -> str:
             margin: 0;
             padding: 24px;
         }}
+
         h1 {{
             margin-top: 0;
-            font-size: 24px;
+            font-size: 26px;
+            font-weight: 600;
         }}
+
         h2 {{
             margin-top: 32px;
             font-size: 20px;
         }}
+
         .card {{
             background: #151a30;
             border-radius: 12px;
@@ -112,22 +141,23 @@ def build_html(pred: dict, last_trade: dict | None) -> str:
             margin-bottom: 24px;
             box-shadow: 0 8px 16px rgba(0,0,0,0.35);
         }}
+
         table {{
             width: 100%;
             border-collapse: collapse;
             margin-top: 8px;
         }}
+
         thead tr {{
             background: #202642;
         }}
+
         th, td {{
             padding: 10px 8px;
             border-bottom: 1px solid #303755;
             font-size: 14px;
         }}
-        th {{
-            text-align: left;
-        }}
+
         .tag {{
             display: inline-block;
             padding: 3px 10px;
@@ -135,63 +165,59 @@ def build_html(pred: dict, last_trade: dict | None) -> str:
             font-size: 12px;
             font-weight: 600;
         }}
-        .tag-buy {{
-            background: #0b5c2a;
-            color: #c7ffd3;
-        }}
-        .tag-sell {{
-            background: #7a1220;
-            color: #ffd3dc;
-        }}
-        .tag-flat {{
-            background: #444b6e;
-            color: #f5f5f5;
-        }}
-        .tag-win {{
-            background: #0b5c2a;
-            color: #c7ffd3;
-        }}
-        .tag-loss {{
-            background: #7a1220;
-            color: #ffd3dc;
-        }}
+
+        .tag-buy {{ background: #0b5c2a; color: #c7ffd3; }}
+        .tag-sell {{ background: #7a1220; color: #ffd3dc; }}
+        .tag-flat {{ background: #444b6e; color: #f5f5f5; }}
+        .tag-win  {{ background: #0b5c2a; color: #c7ffd3; }}
+        .tag-loss {{ background: #7a1220; color: #ffd3dc; }}
     </style>
 </head>
+
 <body>
     <h1>NIFTY RSI-of-MA – Latest Prediction & Last Trade</h1>
 
+    <!-- Prediction card -->
     <div class="card">
         <h2>Next Prediction</h2>
+
         <table>
             <thead>
                 <tr>
-                    <th>As of Date</th>
+                    <th>Date</th>
                     <th>Close</th>
-                    <th>RSI of MA</th>
-                    <th>RSI Signal</th>
+                    <th>RSI(MA)</th>
+                    <th>Signal Line</th>
                     <th>Direction</th>
                     <th>Comment</th>
                 </tr>
             </thead>
+
             <tbody>
                 <tr>
                     <td>{pred['as_of_date']}</td>
                     <td>{pred['close']:.2f}</td>
                     <td>{pred['rsi_ma']:.2f}</td>
                     <td>{pred['rsi_signal']:.2f}</td>
+
                     <td>
-                        {{'<span class="tag tag-buy">BUY (UP)</span>' if pred['direction'].startswith('BUY')
-                        else '<span class="tag tag-sell">SELL (DOWN)</span>' if pred['direction'].startswith('SELL')
-                        else '<span class="tag tag-flat">NO SIGNAL</span>'}}
+                        {(
+                            '<span class="tag tag-buy">BUY (UP)</span>' if pred['direction'].startswith("BUY")
+                            else '<span class="tag tag-sell">SELL (DOWN)</span>' if pred['direction'].startswith("SELL")
+                            else '<span class="tag tag-flat">NO SIGNAL</span>'
+                        )}
                     </td>
+
                     <td>{pred['comment']}</td>
                 </tr>
             </tbody>
         </table>
     </div>
 
+    <!-- Last trade card -->
     <div class="card">
         <h2>Last Closed Trade</h2>
+
         <table>
             <thead>
                 <tr>
@@ -203,20 +229,27 @@ def build_html(pred: dict, last_trade: dict | None) -> str:
                     <th>Result</th>
                 </tr>
             </thead>
+
             <tbody>
                 {last_trade_rows}
             </tbody>
         </table>
     </div>
+
 </body>
 </html>
 """
+
     return html
 
 
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
 def main():
     df = load_data()
 
+    # Same logic as your backtest
     df_ind = compute_indicators(
         df,
         ma_length=9,
@@ -233,7 +266,7 @@ def main():
 
     html = build_html(pred, last_trade)
     HTML_PATH.write_text(html, encoding="utf-8")
-    print(f"Wrote {HTML_PATH}")
+    print(f"Wrote webpage to {HTML_PATH}")
 
 
 if __name__ == "__main__":
