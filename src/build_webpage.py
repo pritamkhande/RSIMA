@@ -19,12 +19,12 @@ def load_data() -> pd.DataFrame:
             f"{DATA_PATH} not found. Run `python src/download_nifty.py` first."
         )
 
-    # Your CSV uses dd-mm-YYYY format
+    # CSV uses dd-mm-YYYY format
     df = pd.read_csv(DATA_PATH, parse_dates=["Date"], dayfirst=True)
     df = df.rename(columns={"Date": "date"})
     df = df.sort_values("date").reset_index(drop=True)
 
-    # Force numeric price columns and drop bad rows
+    # numeric prices, drop bad rows
     numeric_cols = ["Open", "High", "Low", "Close", "AdjClose", "Volume"]
     for c in numeric_cols:
         if c in df.columns:
@@ -39,12 +39,11 @@ def load_data() -> pd.DataFrame:
     return df
 
 
-# ---------- helpers to summarise signals ----------
+# ---------- signal summaries ----------
 
 def get_latest_prediction(df_ind: pd.DataFrame) -> dict:
     last = df_ind.iloc[-1]
 
-    # Fresh signals today
     if last["cross_up"]:
         direction = "BUY (UP)"
         comment = "Fresh BUY signal: RSI(MA) crossed above signal line today."
@@ -52,13 +51,12 @@ def get_latest_prediction(df_ind: pd.DataFrame) -> dict:
         direction = "SELL (DOWN)"
         comment = "Fresh SELL signal: RSI(MA) crossed below signal line today."
     else:
-        # No fresh cross; just describe regime
         if last["rsi_ma"] > last["rsi_signal"]:
             direction = "BULLISH BIAS"
-            comment = "RSI(MA) is above signal line (bullish regime, but no fresh cross)."
+            comment = "RSI(MA) is above signal line (bullish regime, no fresh cross)."
         elif last["rsi_ma"] < last["rsi_signal"]:
             direction = "BEARISH BIAS"
-            comment = "RSI(MA) is below signal line (bearish regime, but no fresh cross)."
+            comment = "RSI(MA) is below signal line (bearish regime, no fresh cross)."
         else:
             direction = "NO SIGNAL"
             comment = "No clear long/short signal on latest bar."
@@ -95,32 +93,33 @@ def get_last_trade(long_trades: pd.DataFrame,
     }
 
 
-# ---------- chart data ----------
+# ---------- chart + monthly stats ----------
 
 def build_chart_data(df_ind: pd.DataFrame,
                      long_trades: pd.DataFrame,
                      short_trades: pd.DataFrame) -> dict:
-    # Use last 300 bars for chart
+    # last 300 bars
     recent = df_ind.tail(300).reset_index(drop=True)
-
     labels = recent["date"].dt.strftime("%Y-%m-%d").tolist()
     prices = recent["Close"].astype(float).tolist()
 
-    # Map trades to chart points (entry/exit)
+    label_to_idx = {d: i for i, d in enumerate(labels)}
+
     def trade_points(trades: pd.DataFrame, kind: str):
         pts = []
         for _, row in trades.iterrows():
-            ed = row["entry_date"]
-            xd = row["exit_date"]
-            pts.append({
-                "direction": row["direction"],
-                "entry": ed.strftime("%Y-%m-%d"),
-                "exit": xd.strftime("%Y-%m-%d"),
-                "entry_price": float(row["entry_open"]),
-                "exit_price": float(row["exit_close"]),
-                "ret": float(row["return_pct"]),
-                "kind": kind,
-            })
+            ed = row["entry_date"].strftime("%Y-%m-%d")
+            if ed not in label_to_idx:
+                continue  # trade outside last 300 bars
+            idx = label_to_idx[ed]
+            pts.append(
+                {
+                    "x": idx,
+                    "y": float(row["entry_open"]),
+                    "dir": row["direction"],
+                    "kind": kind,
+                }
+            )
         return pts
 
     long_pts = trade_points(long_trades, "long")
@@ -134,15 +133,66 @@ def build_chart_data(df_ind: pd.DataFrame,
     }
 
 
+def build_monthly_stats(long_trades: pd.DataFrame,
+                        short_trades: pd.DataFrame) -> list[dict]:
+    """Month-wise performance based on EXIT MONTH."""
+    if long_trades.empty and short_trades.empty:
+        return []
+
+    all_trades = pd.concat([long_trades, short_trades], ignore_index=True).copy()
+    all_trades["exit_date"] = pd.to_datetime(all_trades["exit_date"])
+    all_trades["month"] = all_trades["exit_date"].dt.to_period("M").dt.strftime(
+        "%Y-%m"
+    )
+
+    months = sorted(all_trades["month"].unique())
+
+    rows: list[dict] = []
+    for m in months:
+        m_trades = all_trades[all_trades["month"] == m]
+
+        lt = m_trades[m_trades["direction"] == "long"]
+        st = m_trades[m_trades["direction"] == "short"]
+
+        long_count = len(lt)
+        short_count = len(st)
+
+        long_ret = float(lt["return_pct"].sum()) if long_count > 0 else 0.0
+        short_ret = float(st["return_pct"].sum()) if short_count > 0 else 0.0
+        net_ret = long_ret + short_ret
+
+        rows.append(
+            {
+                "month": m,
+                "long_count": long_count,
+                "long_return": long_ret,
+                "short_count": short_count,
+                "short_return": short_ret,
+                "net_return": net_ret,
+            }
+        )
+
+    return rows
+
+
 # ---------- HTML builder ----------
 
 def build_html(pred: dict,
                last_trade: dict | None,
                long_trades: pd.DataFrame,
                short_trades: pd.DataFrame,
-               chart_data: dict) -> str:
+               chart_data: dict,
+               monthly_stats: list[dict]) -> str:
 
-    # Trades tables (limit to last 50 rows for readability)
+    # Direction badge HTML
+    if str(pred["direction"]).startswith("BUY"):
+        direction_html = '<span class="tag tag-buy">BUY (UP)</span>'
+    elif str(pred["direction"]).startswith("SELL"):
+        direction_html = '<span class="tag tag-sell">SELL (DOWN)</span>'
+    else:
+        direction_html = f'<span class="tag tag-flat">{pred["direction"]}</span>'
+
+    # trades tables (last 50)
     def table_rows(trades: pd.DataFrame) -> str:
         if trades.empty:
             return """
@@ -169,7 +219,7 @@ def build_html(pred: dict,
     long_rows = table_rows(long_trades)
     short_rows = table_rows(short_trades)
 
-    # Last trade row
+    # last trade row
     if last_trade is not None:
         last_trade_row = f"""
         <tr>
@@ -193,7 +243,30 @@ def build_html(pred: dict,
         </tr>
         """
 
-    # Chart data JSON (for JS)
+    # monthly performance rows
+    if not monthly_stats:
+        monthly_rows = """
+        <tr>
+            <td colspan="6" style="text-align:center;">No closed trades yet.</td>
+        </tr>
+        """
+    else:
+        monthly_rows_list = []
+        for r in monthly_stats:
+            monthly_rows_list.append(
+                f"""
+                <tr>
+                    <td>{r['month']}</td>
+                    <td>{r['long_count']}</td>
+                    <td>{r['long_return']:.2f}%</td>
+                    <td>{r['short_count']}</td>
+                    <td>{r['short_return']:.2f}%</td>
+                    <td>{r['net_return']:.2f}%</td>
+                </tr>
+                """
+            )
+        monthly_rows = "\n".join(monthly_rows_list)
+
     chart_json = json.dumps(chart_data)
 
     html = f"""<!DOCTYPE html>
@@ -262,7 +335,6 @@ def build_html(pred: dict,
         .tag-loss {{ background: #7a1220; color: #ffd3dc; }}
     </style>
 
-    <!-- Chart.js CDN -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
@@ -288,13 +360,7 @@ def build_html(pred: dict,
                     <td>{pred['close']:.2f}</td>
                     <td>{pred['rsi_ma']:.2f}</td>
                     <td>{pred['rsi_signal']:.2f}</td>
-                    <td>
-                        {{
-                            '<span class="tag tag-buy">BUY (UP)</span>' if pred['direction'].startswith("BUY")
-                            else '<span class="tag tag-sell">SELL (DOWN)</span>' if pred['direction'].startswith("SELL")
-                            else '<span class="tag tag-flat">' + pred['direction'] + '</span>'
-                        }}
-                    </td>
+                    <td>{direction_html}</td>
                     <td>{pred['comment']}</td>
                 </tr>
             </tbody>
@@ -324,6 +390,25 @@ def build_html(pred: dict,
     <div class="card">
         <h2>Price Chart with Trades (last 300 bars)</h2>
         <canvas id="priceChart" height="120"></canvas>
+    </div>
+
+    <div class="card">
+        <h2>Monthly Performance (by exit month)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Month</th>
+                    <th>Long Trades</th>
+                    <th>Long Total %</th>
+                    <th>Short Trades</th>
+                    <th>Short Total %</th>
+                    <th>Net Total %</th>
+                </tr>
+            </thead>
+            <tbody>
+                {monthly_rows}
+            </tbody>
+        </table>
     </div>
 
     <div class="card">
@@ -384,19 +469,13 @@ def build_html(pred: dict,
                     {{
                         type: 'scatter',
                         label: 'Long Entries',
-                        data: chartData.long_trades.map(t => ({{
-                            x: t.entry,
-                            y: t.entry_price
-                        }})),
+                        data: chartData.long_trades,
                         pointRadius: 4
                     }},
                     {{
                         type: 'scatter',
                         label: 'Short Entries',
-                        data: chartData.short_trades.map(t => ({{
-                            x: t.entry,
-                            y: t.entry_price
-                        }})),
+                        data: chartData.short_trades,
                         pointRadius: 4
                     }}
                 ]
@@ -405,8 +484,7 @@ def build_html(pred: dict,
                 responsive: true,
                 scales: {{
                     x: {{
-                        type: 'time',
-                        time: {{ unit: 'day' }}
+                        // category axis (no time adapter needed)
                     }},
                     y: {{
                         beginAtZero: false
@@ -431,7 +509,7 @@ def main():
     long_trades = generate_trades(df_ind, direction="long")
     short_trades = generate_trades(df_ind, direction="short")
 
-    # Make sure dates are datetime in trades
+    # ensure datetime in trade dfs
     for trades in (long_trades, short_trades):
         if not trades.empty:
             trades["entry_date"] = pd.to_datetime(trades["entry_date"])
@@ -440,8 +518,16 @@ def main():
     pred = get_latest_prediction(df_ind)
     last_trade = get_last_trade(long_trades, short_trades)
     chart_data = build_chart_data(df_ind, long_trades, short_trades)
+    monthly_stats = build_monthly_stats(long_trades, short_trades)
 
-    html = build_html(pred, last_trade, long_trades, short_trades, chart_data)
+    html = build_html(
+        pred,
+        last_trade,
+        long_trades,
+        short_trades,
+        chart_data,
+        monthly_stats,
+    )
     HTML_PATH.write_text(html, encoding="utf-8")
     print(f"Wrote webpage to {HTML_PATH}")
 
