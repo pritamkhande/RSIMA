@@ -1,94 +1,111 @@
-from __future__ import annotations
-
-import numpy as np
 import pandas as pd
+import numpy as np
 
 
-def ema(series: pd.Series, length: int) -> pd.Series:
+def ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
 
-def rsi(series: pd.Series, length: int = 14) -> pd.Series:
+def rsi(series, length):
     delta = series.diff()
-    gain = np.where(delta > 0, delta, 0.0)
-    loss = np.where(delta < 0, -delta, 0.0)
-
-    gain = pd.Series(gain, index=series.index)
-    loss = pd.Series(loss, index=series.index)
-
-    avg_gain = gain.ewm(alpha=1.0 / length, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1.0 / length, adjust=False).mean()
-
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi_val = 100.0 - (100.0 / (1.0 + rs))
-    return rsi_val.fillna(0.0)
+    gain = (delta.where(delta > 0, 0)).rolling(length).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(length).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
 
 def compute_indicators(
-    df: pd.DataFrame,
-    ma_length: int = 9,
-    rsi_length: int = 14,
-    signal_length: int = 22,
-    trend_length: int = 50,
-    rsi_upper: float = 80.0,
-    rsi_lower: float = 20.0,
-    use_trend_filter: bool = True,
-) -> pd.DataFrame:
+    df,
+    ma_length=9,
+    rsi_length=14,
+    signal_length=22,
+    trend_length=50,
+    rsi_upper=80,
+    rsi_lower=20,
+    use_trend_filter=True,
+):
     df = df.copy()
 
     df["ma"] = ema(df["Close"], ma_length)
     df["rsi_ma"] = rsi(df["ma"], rsi_length)
     df["rsi_signal"] = ema(df["rsi_ma"], signal_length)
 
-    df["trend_ma"] = df["Close"].rolling(trend_length).mean()
-    if use_trend_filter:
-        df["uptrend"] = df["Close"] > df["trend_ma"]
-        df["downtrend"] = df["Close"] < df["trend_ma"]
-    else:
-        df["uptrend"] = True
-        df["downtrend"] = True
-
-    df["PAL"] = df["rsi_ma"] > df["rsi_signal"]
-    df["PAS"] = df["rsi_ma"] < df["rsi_signal"]
-
-    df["chgPAL"] = df["PAL"] & (~df["PAL"].shift(1, fill_value=False))
-    df["chgPAS"] = df["PAS"] & (~df["PAS"].shift(1, fill_value=False))
-
-    df["robust_long"] = df["chgPAL"] & (df["rsi_ma"] < rsi_lower) & df["uptrend"]
-    df["robust_short"] = df["chgPAS"] & (df["rsi_ma"] > rsi_upper) & df["downtrend"]
+    # Crossovers
+    df["cross_up"] = (df["rsi_ma"] > df["rsi_signal"]) & (
+        df["rsi_ma"].shift(1) <= df["rsi_signal"].shift(1)
+    )
+    df["cross_down"] = (df["rsi_ma"] < df["rsi_signal"]) & (
+        df["rsi_ma"].shift(1) >= df["rsi_signal"].shift(1)
+    )
 
     return df
 
 
-def generate_trades(df: pd.DataFrame, direction: str = "long") -> pd.DataFrame:
-    assert direction in ("long", "short")
-    sig_col = "robust_long" if direction == "long" else "robust_short"
+def generate_trades(df, direction="long"):
+    """
+    direction="long" -> Buy on cross_up, sell on cross_down
+    direction="short" -> Sell on cross_down, buy to cover on cross_up
+    """
 
+    df = df.copy()
     trades = []
-    for i in range(len(df) - 1):
-        if not df.iloc[i][sig_col]:
-            continue
 
-        entry_idx = i + 1
-        entry_row = df.iloc[entry_idx]
+    in_trade = False
+    entry_price = None
+    entry_date = None
 
-        entry_date = entry_row["date"]
-        entry_open = entry_row["Open"]
-        exit_close = entry_row["Close"]
+    for i in range(1, len(df)):
+        row_prev = df.iloc[i - 1]
+        row = df.iloc[i]
 
+        # LONG TRADES ---------------------------------------------------------
         if direction == "long":
-            ret = (exit_close - entry_open) / entry_open
-        else:
-            ret = (entry_open - exit_close) / entry_open
+            if not in_trade and row["cross_up"]:
+                in_trade = True
+                entry_price = row["Open"]
+                entry_date = row["date"]
 
-        trades.append(
-            {
-                "entry_date": entry_date,
-                "entry_open": float(entry_open),
-                "exit_close": float(exit_close),
-                "return_pct": float(ret * 100.0),
-                "direction": direction,
-            }
-        )
+            elif in_trade and row["cross_down"]:
+                exit_price = row["Close"]
+                exit_date = row["date"]
+                ret = (exit_price - entry_price) / entry_price * 100
+
+                trades.append(
+                    {
+                        "entry_date": entry_date,
+                        "exit_date": exit_date,
+                        "direction": "long",
+                        "entry_open": entry_price,
+                        "exit_close": exit_price,
+                        "return_pct": ret,
+                    }
+                )
+
+                in_trade = False
+
+        # SHORT TRADES --------------------------------------------------------
+        if direction == "short":
+            if not in_trade and row["cross_down"]:
+                in_trade = True
+                entry_price = row["Open"]
+                entry_date = row["date"]
+
+            elif in_trade and row["cross_up"]:
+                exit_price = row["Close"]
+                exit_date = row["date"]
+                ret = (entry_price - exit_price) / entry_price * 100
+
+                trades.append(
+                    {
+                        "entry_date": entry_date,
+                        "exit_date": exit_date,
+                        "direction": "short",
+                        "entry_open": entry_price,
+                        "exit_close": exit_price,
+                        "return_pct": ret,
+                    }
+                )
+
+                in_trade = False
 
     return pd.DataFrame(trades)
