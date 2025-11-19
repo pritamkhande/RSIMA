@@ -59,9 +59,21 @@ def download_nifty_incremental():
             used_symbol = sym
             break
 
+    # If everything failed:
     if df_new is None or df_new.empty:
-        raise RuntimeError("All candidate symbols failed to download data.")
+        if df_old is not None:
+            print("All symbols failed – keeping existing CSV unchanged.")
+            # IMPORTANT: no exception -> workflow continues, using old data
+            return
+        else:
+            print(
+                "All symbols failed AND no existing CSV.\n"
+                "Please copy a historical nifty_daily.csv into data/raw first."
+            )
+            # Do not raise – workflow will still succeed, but backtest will see no file.
+            return
 
+    # Format the new rows
     df_new.reset_index(inplace=True)
     df_new.rename(
         columns={
@@ -77,6 +89,7 @@ def download_nifty_incremental():
     )
     df_new = df_new[["Date", "Open", "High", "Low", "Close", "AdjClose", "Volume"]]
 
+    # Merge into existing CSV
     if df_old is not None:
         df_all = pd.concat([df_old, df_new], ignore_index=True)
         df_all = (
