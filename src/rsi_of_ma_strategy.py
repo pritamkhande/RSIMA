@@ -43,8 +43,13 @@ def compute_indicators(
 
 def generate_trades(df, direction="long"):
     """
-    direction="long" -> Buy on cross_up, sell on cross_down
-    direction="short" -> Sell on cross_down, buy to cover on cross_up
+    direction='long'  -> BUY on cross_up, SELL on cross_down
+    direction='short' -> SELL on cross_down, BUY to cover on cross_up
+
+    We record:
+    - signal_date  : bar where crossover happens
+    - entry_date   : trade date (same bar as signal here, for simplicity)
+    - exit_date
     """
 
     df = df.copy()
@@ -53,6 +58,7 @@ def generate_trades(df, direction="long"):
     in_trade = False
     entry_price = None
     entry_date = None
+    signal_date = None
 
     for i in range(1, len(df)):
         row_prev = df.iloc[i - 1]
@@ -62,50 +68,56 @@ def generate_trades(df, direction="long"):
         if direction == "long":
             if not in_trade and row["cross_up"]:
                 in_trade = True
+                signal_date = row["date"]          # crossover bar
+                entry_date = row["date"]           # trade at same bar
                 entry_price = row["Open"]
-                entry_date = row["date"]
 
             elif in_trade and row["cross_down"]:
-                exit_price = row["Close"]
                 exit_date = row["date"]
-                ret = (exit_price - entry_price) / entry_price * 100
+                exit_price = row["Close"]
+                pct = (exit_price - entry_price) / entry_price * 100.0
+                pts = exit_price - entry_price
 
                 trades.append(
                     {
+                        "signal_date": signal_date,
                         "entry_date": entry_date,
                         "exit_date": exit_date,
                         "direction": "long",
                         "entry_open": entry_price,
                         "exit_close": exit_price,
-                        "return_pct": ret,
+                        "return_pct": pct,
+                        "point_gain": pts,
                     }
                 )
-
                 in_trade = False
 
         # SHORT TRADES --------------------------------------------------------
         if direction == "short":
             if not in_trade and row["cross_down"]:
                 in_trade = True
-                entry_price = row["Open"]
+                signal_date = row["date"]
                 entry_date = row["date"]
+                entry_price = row["Open"]
 
             elif in_trade and row["cross_up"]:
-                exit_price = row["Close"]
                 exit_date = row["date"]
-                ret = (entry_price - exit_price) / entry_price * 100
+                exit_price = row["Close"]
+                pct = (entry_price - exit_price) / entry_price * 100.0
+                pts = entry_price - exit_price
 
                 trades.append(
                     {
+                        "signal_date": signal_date,
                         "entry_date": entry_date,
                         "exit_date": exit_date,
                         "direction": "short",
                         "entry_open": entry_price,
                         "exit_close": exit_price,
-                        "return_pct": ret,
+                        "return_pct": pct,
+                        "point_gain": pts,
                     }
                 )
-
                 in_trade = False
 
     return pd.DataFrame(trades)
