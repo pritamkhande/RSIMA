@@ -10,17 +10,35 @@ DATA_PATH = ROOT / "data" / "raw" / "nifty_daily.csv"
 HTML_PATH = ROOT / "index.html"
 
 
+# ---------- data loading ----------
+
 def load_data() -> pd.DataFrame:
     if not DATA_PATH.exists():
         raise FileNotFoundError(
             f"{DATA_PATH} not found. Run `python src/download_nifty.py` first."
         )
 
-    df = pd.read_csv(DATA_PATH, parse_dates=["Date"])
+    # Your CSV uses dd-mm-YYYY format
+    df = pd.read_csv(DATA_PATH, parse_dates=["Date"], dayfirst=True)
     df = df.rename(columns={"Date": "date"})
     df = df.sort_values("date").reset_index(drop=True)
+
+    # Force numeric price columns and drop bad rows (e.g. '^NSEI')
+    numeric_cols = ["Open", "High", "Low", "Close", "AdjClose", "Volume"]
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    before = len(df)
+    df = df.dropna(subset=["Close"]).reset_index(drop=True)
+    after = len(df)
+    if after < before:
+        print(f"Dropped {before - after} bad rows with non-numeric Close values.")
+
     return df
 
+
+# ---------- helpers to summarise signals ----------
 
 def get_latest_prediction(df_ind: pd.DataFrame) -> dict:
     last = df_ind.iloc[-1]
@@ -68,8 +86,9 @@ def get_last_trade(df_ind: pd.DataFrame) -> dict | None:
     }
 
 
-def build_html(pred: dict, last_trade: dict | None) -> str:
+# ---------- HTML builder ----------
 
+def build_html(pred: dict, last_trade: dict | None) -> str:
     if last_trade is not None:
         last_trade_rows = f"""
         <tr>
@@ -94,14 +113,132 @@ def build_html(pred: dict, last_trade: dict | None) -> str:
     <meta charset="UTF-8" />
     <title>NIFTY RSI-of-MA – Latest Prediction</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <style>
+        body {{
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #0b1020;
+            color: #f5f5f5;
+            margin: 0;
+            padding: 24px;
+        }}
+
+        h1 {{
+            margin-top: 0;
+            font-size: 26px;
+            font-weight: 600;
+        }}
+
+        h2 {{
+            margin-top: 32px;
+            font-size: 20px;
+        }}
+
+        .card {{
+            background: #151a30;
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 24px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.35);
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }}
+
+        thead tr {{
+            background: #202642;
+        }}
+
+        th, td {{
+            padding: 10px 8px;
+            border-bottom: 1px solid #303755;
+            font-size: 14px;
+        }}
+
+        .tag {{
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+        }}
+
+        .tag-buy {{ background: #0b5c2a; color: #c7ffd3; }}
+        .tag-sell {{ background: #7a1220; color: #ffd3dc; }}
+        .tag-flat {{ background: #444b6e; color: #f5f5f5; }}
+        .tag-win  {{ background: #0b5c2a; color: #c7ffd3; }}
+        .tag-loss {{ background: #7a1220; color: #ffd3dc; }}
+    </style>
 </head>
+
 <body>
     <h1>NIFTY RSI-of-MA – Latest Prediction & Last Trade</h1>
+
+    <div class="card">
+        <h2>Next Prediction</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Close</th>
+                    <th>RSI(MA)</th>
+                    <th>Signal Line</th>
+                    <th>Direction</th>
+                    <th>Comment</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                <tr>
+                    <td>{pred['as_of_date']}</td>
+                    <td>{pred['close']:.2f}</td>
+                    <td>{pred['rsi_ma']:.2f}</td>
+                    <td>{pred['rsi_signal']:.2f}</td>
+                    <td>
+                        {(
+                            '<span class="tag tag-buy">BUY (UP)</span>' if pred['direction'].startswith("BUY")
+                            else '<span class="tag tag-sell">SELL (DOWN)</span>' if pred['direction'].startswith("SELL")
+                            else '<span class="tag tag-flat">NO SIGNAL</span>'
+                        )}
+                    </td>
+                    <td>{pred['comment']}</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Last Closed Trade</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Entry Date</th>
+                    <th>Direction</th>
+                    <th>Entry Open</th>
+                    <th>Exit Close</th>
+                    <th>Return %</th>
+                    <th>Result</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                {last_trade_rows}
+            </tbody>
+        </table>
+    </div>
+
 </body>
 </html>
 """
     return html
 
+
+# ---------- main ----------
 
 def main():
     df = load_data()
