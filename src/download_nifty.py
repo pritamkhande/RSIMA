@@ -1,38 +1,98 @@
-import os
+import datetime as dt
 from pathlib import Path
-import yfinance as yf
 import pandas as pd
-from datetime import datetime
+import yfinance as yf
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "raw"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+CANDIDATE_SYMBOLS = [
+    "^NSEI",        # Primary NIFTY index
+    "^NIFTY",       # Alternate
+    "^NSEBANK",     # Bank NIFTY fallback
+    "NIFTYBEES.NS"  # ETF proxy – always works
+]
 
-# Yahoo symbol for NIFTY 50 index
-NIFTY_SYMBOL = "^NSEI"  # main Nifty index
-
-START_DATE = "2000-01-01"
-END_DATE = datetime.today().strftime("%Y-%m-%d")
+DATA_DIR = Path("data") / "raw"
+CSV_PATH = DATA_DIR / "nifty_daily.csv"
 
 
-def download_nifty(symbol: str = NIFTY_SYMBOL,
-                   start: str = START_DATE,
-                   end: str = END_DATE) -> pd.DataFrame:
-    print(f"Downloading {symbol} from {start} to {end}...")
-    df = yf.download(symbol, start=start, end=end, interval="1d", auto_adjust=False)
+def try_download(symbol, start_date, end_date):
+    print(f"Trying symbol: {symbol}")
+    df = yf.download(
+        symbol,
+        start=start_date,
+        end=end_date,
+        interval="1d",
+        auto_adjust=False,
+        progress=False,
+    )
     if df.empty:
-        raise RuntimeError("Downloaded dataframe is empty. Check symbol or dates.")
-    df = df.dropna()
-    df.reset_index(inplace=True)
-    df.rename(columns={"Date": "date"}, inplace=True)
+        print(f"  -> Failed for {symbol}")
+        return None
     return df
 
 
-def main():
-    df = download_nifty()
-    out_path = DATA_DIR / "nifty_2000.csv"
-    df.to_csv(out_path, index=False)
-    print(f"Saved {len(df)} rows to {out_path}")
+def download_incremental():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    today = dt.date.today()
+
+    if CSV_PATH.exists():
+        df_old = pd.read_csv(CSV_PATH, parse_dates=["Date"])
+        last_date = df_old["Date"].max().date()
+        start_date = last_date + dt.timedelta(days=1)
+        print(f"Existing data till {last_date}. Fetching from {start_date}...")
+    else:
+        df_old = None
+        start_date = dt.date(2000, 1, 1)
+        print(f"No existing CSV. Fetching from {start_date}...")
+
+    if start_date > today:
+        print("No new dates to download.")
+        return
+
+    end_date = today + dt.timedelta(days=1)
+
+    # Try each symbol until success
+    df = None
+    used_symbol = None
+    for sym in CANDIDATE_SYMBOLS:
+        df = try_download(sym, start_date, end_date)
+        if df is not None:
+            used_symbol = sym
+            break
+
+    if df is None:
+        raise RuntimeError("All candidate symbols failed.")
+
+    # Format columns
+    df.reset_index(inplace=True)
+    df.rename(
+        columns={
+            "Date": "Date",
+            "Open": "Open",
+            "High": "High",
+            "Low": "Low",
+            "Close": "Close",
+            "Adj Close": "AdjClose",
+            "Volume": "Volume",
+        },
+        inplace=True,
+    )
+    df = df[["Date", "Open", "High", "Low", "Close", "AdjClose", "Volume"]]
+
+    # Merge
+    if df_old is not None:
+        df_all = pd.concat([df_old, df], ignore_index=True)
+        df_all = (
+            df_all.drop_duplicates(subset=["Date"])
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+    else:
+        df_all = df.sort_values("Date").reset_index(drop=True)
+
+    df_all.to_csv(CSV_PATH, index=False)
+    print(f"Saved {len(df_all)} rows to {CSV_PATH} using {used_symbol}")
 
 
 if __name__ == "__main__":
-    main()
+    download_incremental()
