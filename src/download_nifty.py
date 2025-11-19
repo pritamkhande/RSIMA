@@ -1,36 +1,15 @@
 import datetime as dt
 from pathlib import Path
+
 import pandas as pd
 import yfinance as yf
 
-CANDIDATE_SYMBOLS = [
-    "^NSEI",
-    "^NIFTY",
-    "^NSEBANK",
-    "NIFTYBEES.NS",
-]
-
+SYMBOL = "^NSEI"  # Nifty 50 index on Yahoo
 DATA_DIR = Path("data") / "raw"
 CSV_PATH = DATA_DIR / "nifty_daily.csv"
 
 
-def try_download(symbol, start_date, end_date):
-    print(f"Trying symbol: {symbol}")
-    df = yf.download(
-        symbol,
-        start=start_date,
-        end=end_date,
-        interval="1d",
-        auto_adjust=False,
-        progress=False,
-    )
-    if df is None or df.empty:
-        print(f"  -> {symbol}: no data returned.")
-        return None
-    return df
-
-
-def download_nifty_incremental():
+def download_incremental():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     today = dt.date.today()
@@ -51,27 +30,21 @@ def download_nifty_incremental():
 
     end_date = today + dt.timedelta(days=1)
 
-    df_new = None
-    used_symbol = None
-    for sym in CANDIDATE_SYMBOLS:
-        df_new = try_download(sym, start_date, end_date)
-        if df_new is not None and not df_new.empty:
-            used_symbol = sym
-            break
+    new = yf.download(
+        SYMBOL,
+        start=start_date,
+        end=end_date,
+        interval="1d",
+        auto_adjust=False,
+        progress=False,
+    )
 
-    if df_new is None or df_new.empty:
-        if df_old is not None:
-            print("All symbols failed – keeping existing CSV unchanged.")
-            return
-        else:
-            print(
-                "All symbols failed AND no existing CSV. "
-                "Seed data/raw/nifty_daily.csv manually first."
-            )
-            return
+    if new.empty:
+        print("No new data returned from yfinance.")
+        return
 
-    df_new.reset_index(inplace=True)
-    df_new.rename(
+    new.reset_index(inplace=True)
+    new.rename(
         columns={
             "Date": "Date",
             "Open": "Open",
@@ -83,21 +56,22 @@ def download_nifty_incremental():
         },
         inplace=True,
     )
-    df_new = df_new[["Date", "Open", "High", "Low", "Close", "AdjClose", "Volume"]]
+
+    new = new[["Date", "Open", "High", "Low", "Close", "AdjClose", "Volume"]]
 
     if df_old is not None:
-        df_all = pd.concat([df_old, df_new], ignore_index=True)
+        df_all = pd.concat([df_old, new], ignore_index=True)
         df_all = (
             df_all.drop_duplicates(subset=["Date"])
             .sort_values("Date")
             .reset_index(drop=True)
         )
     else:
-        df_all = df_new.sort_values("Date").reset_index(drop=True)
+        df_all = new.sort_values("Date").reset_index(drop=True)
 
     df_all.to_csv(CSV_PATH, index=False)
-    print(f"Saved {len[df_all]} rows to {CSV_PATH} using {used_symbol}")
+    print(f"Saved {len(df_all)} rows to {CSV_PATH}")
 
 
 if __name__ == "__main__":
-    download_nifty_incremental()
+    download_incremental()
