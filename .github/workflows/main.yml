@@ -37,7 +37,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Download NIFTY data
-        run: python src/download_nifty.py
+        run: python src/download_incremental.py
 
       - name: Run backtest
         run: python src/backtest_nifty_rsi_oma.py
