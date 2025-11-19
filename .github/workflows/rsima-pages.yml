@@ -39,6 +39,10 @@ jobs:
       - name: Build oracle price-only trades
         run: python src/oracle_price_only.py
 
+      - name: Fit RSI band from history
+        run: python src/fit_rsi_rule_to_oracle.py
+
+
       - name: Run backtest
         run: python src/backtest_nifty_rsi_oma.py
 
