@@ -6,7 +6,8 @@ import numpy as np
 
 from rsi_of_ma_strategy import compute_indicators, generate_trades
 
-DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "raw" / "nifty_2000.csv"
+DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "raw" / "nifty_daily.csv"
+#    FIX: use nifty_daily.csv instead of nifty_2000.csv
 
 
 def load_data() -> pd.DataFrame:
@@ -14,7 +15,8 @@ def load_data() -> pd.DataFrame:
         raise FileNotFoundError(
             f"{DATA_PATH} not found. Run `python src/download_nifty.py` first."
         )
-    df = pd.read_csv(DATA_PATH, parse_dates=["date"])
+    df = pd.read_csv(DATA_PATH, parse_dates=["Date"])
+    df = df.rename(columns={"Date": "date"})  # unify naming
     df = df.sort_values("date").reset_index(drop=True)
     return df
 
