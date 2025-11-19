@@ -14,9 +14,25 @@ def load_data() -> pd.DataFrame:
         raise FileNotFoundError(
             f"{DATA_PATH} not found. Run `python src/download_nifty.py` first."
         )
-    df = pd.read_csv(DATA_PATH, parse_dates=["Date"])
+
+    # Your CSV uses dd-mm-YYYY
+    df = pd.read_csv(DATA_PATH, parse_dates=["Date"], dayfirst=True)
     df = df.rename(columns={"Date": "date"})
     df = df.sort_values("date").reset_index(drop=True)
+
+    # FORCE price columns to numeric, drop bad rows like '^NSEI'
+    numeric_cols = ["Open", "High", "Low", "Close", "AdjClose", "Volume"]
+    for c in numeric_cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # drop rows where Close is NaN (invalid)
+    before = len(df)
+    df = df.dropna(subset=["Close"]).reset_index(drop=True)
+    after = len(df)
+    if after < before:
+        print(f"Dropped {before - after} bad rows with non-numeric Close values.")
+
     return df
 
 
